@@ -927,6 +927,7 @@ dependencies = [
  "rand_distr",
  "serde",
  "serde_json",
+ "statrs",
  "tracing",
  "tracing-subscriber",
  "zenoh",
@@ -1338,6 +1339,7 @@ dependencies = [
  "num-complex",
  "num-rational",
  "num-traits",
+ "serde",
  "simba",
  "typenum",
 ]
@@ -1425,6 +1427,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
 dependencies = [
  "num-traits",
+ "serde",
 ]
 
 [[package]]
@@ -2539,6 +2542,17 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "statrs"
+version = "0.19.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1837f9a1bd13dabbdbb04489c39451482d3cdd35a6e1a0d0f3570dea2b8c8be"
+dependencies = [
+ "approx",
+ "num-traits",
+ "thiserror",
+]
 
 [[package]]
 name = "strsim"

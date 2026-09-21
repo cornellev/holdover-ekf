@@ -4,29 +4,25 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-# --- transport ---
+# --- transport (from Claude) ---
 # Default features pull QUIC/TLS/WS/compression/auth. On a car LAN you need
-# TCP + UDP (+ unixsock for same-host peers). Trimming: 347 -> 296 crates.
+# TCP + UDP (+ unixsock for same-host peers). Trimming: 312 -> 261 crates.
+# NOTE: transport_udp still drags in quinn + rustls + ring -- zenoh-link-udp
+# has a NON-optional dep on zenoh-link-quic_datagram. Dropping udp would get
+# you to 212, but costs UDP multicast scouting (LinkManagerMulticastUdp), so
+# you'd have to hardcode connect/endpoints. Keeping udp.
 zenoh = { version = "1.10", default-features = false, features = [
     "transport_tcp",
     "transport_udp",
     "transport_unixsock-stream",
 ] }
 
-# --- math ---
-# 0.35. Use the const-generic stack types (SVector<f64,N>/SMatrix<f64,N,N>) --
-# no heap, no alloc in the filter loop.
-nalgebra = "0.35"
+nalgebra = { version = "0.35", features = ["serde-serialize"] }
 
 # --- wire format ---
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"   # swap for `cdr` if the sensor nodes come off zenoh-bridge-ros2dds
 
-# --- geodesy ---
-# GPS gives LLA; the bicycle model lives in a local planar frame. This does
-# LLA -> ENU about a fixed origin. Zero dependencies, plain f64 tuples.
-# (Deliberately NOT nav-types: it pins nalgebra 0.32, so you'd get two
-#  incompatible nalgebra versions in the tree.)
 map_3d = "0.1"
 
 # --- plumbing ---
@@ -39,6 +35,7 @@ approx = "0.5"       # assert_relative_eq! works directly on nalgebra types
 proptest = "1"       # P symmetry/PSD invariants, angle wrapping, Joseph-form properties
 rand = "0.10"        # must be 0.10 -- rand_distr 0.6 requires it
 rand_distr = "0.6"   # Normal, for Monte-Carlo NEES/NIS consistency tests
+statrs = { version = "0.19.1", default-features = false}
 
 [profile.release]
 debug = true         # keep symbols; you will be profiling this on the Jetson/Pi
