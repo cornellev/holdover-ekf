@@ -1,4 +1,4 @@
 pub mod filter;
 pub mod model;
 pub mod msg;
-pub mod gps;
+pub mod sensors;
