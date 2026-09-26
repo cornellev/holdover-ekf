@@ -4,10 +4,14 @@ use nalgebra::{SMatrix, SVector};
 use crate::ekf::model::{S, Vec5}; // enum and vec structure
 use crate::ekf::msg::GPSFix;
 
+pub type Vec1 = SVector<f64, 1>;
+pub type Mat1 = SMatrix<f64, 1, 1>;
+pub type Mat1x5 = SMatrix<f64, 1, 5>;
 pub type Vec2 = SVector<f64, 2>;
 pub type Mat2 = SMatrix<f64, 2, 2>;
 pub type Mat2x5 = SMatrix<f64, 2, 5>;
 
+#[derive(Debug, Clone, Copy)] //NOTE: we don't need clone/copy as this is readable ref only, right?
 pub struct Origin {
     lat: f64,
     lon: f64,
@@ -33,7 +37,7 @@ impl Origin {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct GPSNoise {
     pub sigma_pos: f64,
 }
@@ -57,6 +61,31 @@ pub fn gps_jacobian() -> Mat2x5 {
 pub fn gps_r(noise: &GPSNoise) -> Mat2 {
     Mat2::identity() * noise.sigma_pos.powi(2)
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct IMUNoise {
+    pub sigma_ay: f64 // accelerometer not gyro
+}
+
+impl Default for IMUNoise {
+    fn default() -> Self { Self { sigma_ay: 0.5 } }
+}
+
+pub fn imu_h(x: &Vec5, omega_z: f64) -> Vec1 {
+    Vec1::new(x[S::V] * (omega_z - x[S::Bw]))
+}
+
+pub fn imu_jacobian(x: &Vec5, omega_z: f64) -> Mat1x5 {
+    let mut h = Mat1x5::zeros();
+    h[(0, S::V.ix())] = omega_z - x[S::Bw];
+    h[(0, S::Bw.ix())] = -x[S::V];
+    h
+}
+
+pub fn imu_r(noise: &IMUNoise) -> Mat1 {
+    Mat1::new(noise.sigma_ay.powi(2))
+}
+
 
 #[cfg(test)]
 mod tests {
