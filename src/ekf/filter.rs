@@ -1,6 +1,6 @@
 use nalgebra::{SMatrix, SVector};
 
-use crate::ekf::model::{wrap_pi, Mat5, S, Vec5};
+use crate::ekf::model::{wrap_pi, Mat5, StateEnum, Vec5};
 
 pub fn update<const M: usize>(
     x: &Vec5,
@@ -16,7 +16,7 @@ pub fn update<const M: usize>(
     let k =p * h.transpose() * s_inv;
 
     let mut x_new = x + k * y;
-    x_new[S::Psi] = wrap_pi(x_new[S::Psi]);
+    x_new[StateEnum::Psi] = wrap_pi(x_new[StateEnum::Psi]);
 
     let i_kh = Mat5::identity() - k * h;
     let p_new = i_kh * p * i_kh.transpose() + k * r * k.transpose();
@@ -45,7 +45,7 @@ mod tests {
             .expect("S should be invertible");
 
         assert_relative_eq!(xn, x, epsilon=1e-12);
-        assert!(pn.at(S::Pe, S::Pe) < p.at(S::Pe, S::Pe));
+        assert!(pn.at(StateEnum::Pe, StateEnum::Pe) < p.at(StateEnum::Pe, StateEnum::Pe));
         assert!(pn.trace() < p.trace());
     }
 
@@ -58,8 +58,8 @@ mod tests {
         let r = Mat2::identity() * 4.0;
         let (xn, pn) = update(&x, &p, &z, &gps_h(&x), &gps_jacobian(), &r).unwrap();
 
-        assert_relative_eq!(xn[S::Pe], 1.0, epsilon=1e-12);
-        assert_relative_eq!(pn.at(S::Pe, S::Pe), 2.0, epsilon=1e-12);
+        assert_relative_eq!(xn[StateEnum::Pe], 1.0, epsilon=1e-12);
+        assert_relative_eq!(pn.at(StateEnum::Pe, StateEnum::Pe), 2.0, epsilon=1e-12);
     }
 
     #[test]
@@ -78,12 +78,12 @@ mod tests {
     fn position_fix_corrects_heading_through_cross_cov() {
         let (x, p) = prior();
         let (x, p) = predict(&x, &p, 0.0, 0.1, &ProcessNoise::default());
-        assert!(p.at(S::Pn, S::Psi) > 0.0);
+        assert!(p.at(StateEnum::Pn, StateEnum::Psi) > 0.0);
 
         let z = gps_h(&x) + Vec2::new(0.0, 1.0);
         let (xn, _) = update(&x, &p, &z, &gps_h(&x), &gps_jacobian(), &gps_r(&GPSNoise::default())).unwrap();
 
-        assert!(xn[S::Psi] > x[S::Psi]);
+        assert!(xn[StateEnum::Psi] > x[StateEnum::Psi]);
     }
 
     #[test]

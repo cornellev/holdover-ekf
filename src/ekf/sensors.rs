@@ -1,7 +1,7 @@
 use map_3d::{geodetic2enu, Ellipsoid};
 use nalgebra::{SMatrix, SVector};
 
-use crate::ekf::model::{S, Vec5}; // enum and vec structure
+use crate::ekf::model::{StateEnum, Vec5}; // enum and vec structure
 use crate::ekf::msg::GPSFix;
 
 pub type Vec1 = SVector<f64, 1>;
@@ -48,13 +48,13 @@ impl Default for GPSNoise {
 
 // Predicted measurement model for GPS
 pub fn gps_h(x: &Vec5) -> Vec2 {
-    Vec2::new(x[S::Pe], x[S::Pn])
+    Vec2::new(x[StateEnum::Pe], x[StateEnum::Pn])
 }
 
 pub fn gps_jacobian() -> Mat2x5 {
     let mut h = Mat2x5::zeros();
-    h[(0, S::Pe.ix())] = 1.0;
-    h[(1, S::Pn.ix())] = 1.0;
+    h[(0, StateEnum::Pe.ix())] = 1.0;
+    h[(1, StateEnum::Pn.ix())] = 1.0;
     h
 }
 
@@ -72,13 +72,13 @@ impl Default for IMUNoise {
 }
 
 pub fn imu_h(x: &Vec5, omega_z: f64) -> Vec1 {
-    Vec1::new(x[S::V] * (omega_z - x[S::Bw]))
+    Vec1::new(x[StateEnum::V] * (omega_z - x[StateEnum::Bw]))
 }
 
 pub fn imu_jacobian(x: &Vec5, omega_z: f64) -> Mat1x5 {
     let mut h = Mat1x5::zeros();
-    h[(0, S::V.ix())] = omega_z - x[S::Bw];
-    h[(0, S::Bw.ix())] = -x[S::V];
+    h[(0, StateEnum::V.ix())] = omega_z - x[StateEnum::Bw];
+    h[(0, StateEnum::Bw.ix())] = -x[StateEnum::V];
     h
 }
 

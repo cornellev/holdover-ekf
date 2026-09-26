@@ -11,7 +11,7 @@ pub fn wrap_pi(a: f64) -> f64 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(usize)]
-pub enum S {
+pub enum StateEnum {
     Pe,
     Pn,
     Psi,
@@ -19,36 +19,36 @@ pub enum S {
     Bw
 }
 
-impl S {
+impl StateEnum {
     pub const DIM: usize = 5;
-    pub const ALL: [S; Self::DIM] = [S::Pe, S::Pn, 
-        S::Psi, S::V, S::Bw];
+    pub const ALL: [StateEnum; Self::DIM] = [StateEnum::Pe, StateEnum::Pn, 
+        StateEnum::Psi, StateEnum::V, StateEnum::Bw];
 
     #[inline]
     pub const fn ix(self) -> usize { self as usize }
 }
 
-impl Index<S> for Vec5 {
+impl Index<StateEnum> for Vec5 {
     type Output = f64;
     #[inline]
-    fn index(&self, i: S) -> &f64 { &self[i.ix()] }
+    fn index(&self, i: StateEnum) -> &f64 { &self[i.ix()] }
 }
 
-impl IndexMut<S> for Vec5 {
+impl IndexMut<StateEnum> for Vec5 {
     #[inline]
-    fn index_mut(&mut self, i: S) -> &mut f64 { &mut self[i.ix()] }
+    fn index_mut(&mut self, i: StateEnum) -> &mut f64 { &mut self[i.ix()] }
 }
 
 pub trait StateMatrix {
-    fn at(&self, r: S, c: S) -> f64;
-    fn set(&mut self, r: S, c: S, v:f64);
+    fn at(&self, r: StateEnum, c: StateEnum) -> f64;
+    fn set(&mut self, r: StateEnum, c: StateEnum, v:f64);
 }
 
 impl StateMatrix for Mat5 {
     #[inline]
-    fn at(&self, r: S, c: S) -> f64 { self[(r.ix(), c.ix())] }
+    fn at(&self, r: StateEnum, c: StateEnum) -> f64 { self[(r.ix(), c.ix())] }
     #[inline]
-    fn set(&mut self, r: S, c: S, v: f64) { self[(r.ix(), c.ix())] = v; }
+    fn set(&mut self, r: StateEnum, c: StateEnum, v: f64) { self[(r.ix(), c.ix())] = v; }
 }
 
 // Model time
@@ -74,27 +74,27 @@ impl Default for ProcessNoise {
 pub fn propagate(x: &Vec5, omega_z: f64, dt: f64) -> Vec5 {
     debug_assert!(dt > 0.0, "dt must be a positive number, got {dt}");
 
-    let (psi, v, b) = (x[S::Psi], x[S::V], x[S::Bw]);
+    let (psi, v, b) = (x[StateEnum::Psi], x[StateEnum::V], x[StateEnum::Bw]);
     let (s, c) = psi.sin_cos();
 
     let mut out = *x;
-    out[S::Pe] += v * c * dt;
-    out[S::Pn] += v * s * dt;
-    out[S::Psi] = wrap_pi(psi + (omega_z - b) * dt);
+    out[StateEnum::Pe] += v * c * dt;
+    out[StateEnum::Pn] += v * s * dt;
+    out[StateEnum::Psi] = wrap_pi(psi + (omega_z - b) * dt);
 
     out
 }
 
 pub fn jacobian(x: &Vec5, dt: f64) -> Mat5 {
-    let (s,c) = x[S::Psi].sin_cos();
-    let v = x[S::V];
+    let (s,c) = x[StateEnum::Psi].sin_cos();
+    let v = x[StateEnum::V];
 
     let mut f = Mat5::identity();
-    f.set(S::Pe, S::Psi, -v * s * dt);
-    f.set(S::Pe, S::V, c*dt);
-    f.set(S::Pn, S::Psi, v * c * dt);
-    f.set(S::Pn, S::V, s * dt);
-    f.set(S::Psi, S::Bw, -dt);
+    f.set(StateEnum::Pe, StateEnum::Psi, -v * s * dt);
+    f.set(StateEnum::Pe, StateEnum::V, c*dt);
+    f.set(StateEnum::Pn, StateEnum::Psi, v * c * dt);
+    f.set(StateEnum::Pn, StateEnum::V, s * dt);
+    f.set(StateEnum::Psi, StateEnum::Bw, -dt);
     f
 }
 
@@ -107,9 +107,9 @@ pub fn predict(
 ) -> (Vec5, Mat5) {
     let f = jacobian(x, dt);
     let mut qd = Mat5::zeros();
-    qd.set(S::Psi, S::Psi, q.sigma_omega.powi(2) * dt);
-    qd.set(S::V, S::V, q.sigma_v.powi(2) * dt);
-    qd.set(S::Bw, S::Bw, q.sigma_b.powi(2) * dt);
+    qd.set(StateEnum::Psi, StateEnum::Psi, q.sigma_omega.powi(2) * dt);
+    qd.set(StateEnum::V, StateEnum::V, q.sigma_v.powi(2) * dt);
+    qd.set(StateEnum::Bw, StateEnum::Bw, q.sigma_b.powi(2) * dt);
 
     (propagate(x, omega_z, dt), f * p * f.transpose() + qd)
 }
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn enum_is_contiguous() {
-        for (n,s) in S::ALL.iter().enumerate() {
+        for (n,s) in StateEnum::ALL.iter().enumerate() {
             assert_eq!(s.ix(), n);
         }
     }
@@ -135,13 +135,13 @@ mod tests {
 
         let f = jacobian(&x, dt);
 
-        for col in S::ALL {
+        for col in StateEnum::ALL {
             let (mut hi, mut lo) = (x,x);
             hi[col] += h;
             lo[col] -= h;
             let fd = (propagate(&hi, omega, dt) - propagate(&lo, omega, dt)) / (2.0 * h);
 
-            for row in S::ALL {
+            for row in StateEnum::ALL {
                 assert_relative_eq!(f.at(row, col), fd[row], epsilon=1e-6);
             }
         }
@@ -158,19 +158,19 @@ mod tests {
             x = propagate(&x, b, dt)
         }
 
-        assert_relative_eq!(x[S::Pe], 10.0 * dt * n as f64, epsilon=1e-9);
-        assert_relative_eq!(x[S::Pn], 0.0, epsilon=1e-12);
-        assert_relative_eq!(x[S::Psi], 0.0, epsilon=1e-12);
-        assert_relative_eq!(x[S::V], 10.0, epsilon=1e-12);
-        assert_relative_eq!(x[S::Bw], b, epsilon=1e-12);
+        assert_relative_eq!(x[StateEnum::Pe], 10.0 * dt * n as f64, epsilon=1e-9);
+        assert_relative_eq!(x[StateEnum::Pn], 0.0, epsilon=1e-12);
+        assert_relative_eq!(x[StateEnum::Psi], 0.0, epsilon=1e-12);
+        assert_relative_eq!(x[StateEnum::V], 10.0, epsilon=1e-12);
+        assert_relative_eq!(x[StateEnum::Bw], b, epsilon=1e-12);
     }
 
     #[test]
     fn check_pi2_rotation_from_east_to_north() {
         let x = Vec5::new(0.0, 0.0, FRAC_PI_2, 10.0, 0.0);
         let out = propagate(&x, 0.0, 0.1);
-        assert_relative_eq!(out[S::Pe], 0.0, epsilon=1e-12);
-        assert_relative_eq!(out[S::Pn], 1.0, epsilon=1e-12);
+        assert_relative_eq!(out[StateEnum::Pe], 0.0, epsilon=1e-12);
+        assert_relative_eq!(out[StateEnum::Pn], 1.0, epsilon=1e-12);
     }
 
     #[test]
@@ -180,7 +180,7 @@ mod tests {
         let (_, pp) = predict(&x, &p, 0.1, 0.01, &ProcessNoise::default());
 
         assert_relative_eq!(pp, pp.transpose(), epsilon=1e-12);
-        assert!(pp.at(S::Pe, S::Pe) > p.at(S::Pe, S::Pe));
+        assert!(pp.at(StateEnum::Pe, StateEnum::Pe) > p.at(StateEnum::Pe, StateEnum::Pe));
     }
 
     #[test]
