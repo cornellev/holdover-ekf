@@ -1,5 +1,5 @@
 use nalgebra::{SMatrix, SVector};
-use sensor_defs::{GPS, IMU, Reject};
+use sensor_defs::{GPS, IMU, Propagate, Reject, Update};
 
 use crate::ekf::filter::update;
 use crate::ekf::model::{predict, Mat5, ProcessNoise, Vec5};
@@ -109,25 +109,51 @@ impl EKF {
         }
     }
 
+    /// Gyro propagates the state, then the accelerometer corrects it.
     pub fn on_imu(&mut self, imu: &IMU) -> Result<(), Reject> {
-        let Phase::Running(run) = &mut self.phase else {
-            self.gyro_z = imu.gyro_rad_s()[2];
-            return Err(Reject::NotRunning);
-        };
-
-        // Hold the *previous* gyro smaple over [t_prev, imu.t] then latch onto the new one when ready
-        run.advance_to(imu.stamp_ns(), self.gyro_z, &self.tuning.q)?;
-        self.gyro_z = imu.gyro_rad_s()[2];
-
-        run.correct(
-            &Vec1::new(imu.accel_m_s2()[1]),
-            &imu_h(&run.x, self.gyro_z),
-            &imu_jacobian(&run.x, self.gyro_z),
-            &imu_r(&self.tuning.imu),
-        )
+        self.propagate(imu)?;
+        self.update(imu)
     }
 
     pub fn on_gps(&mut self, fix: &GPS) -> Result<(), Reject> {
+        self.update(fix)
+    }
+}
+
+impl Propagate<IMU> for EKF {
+    /// ZOH: the previous gyro sample drives [t_prev, t], then this sample is latched.
+    fn propagate(&mut self, imu: &IMU) -> Result<(), Reject> {
+        let gyro_z = imu.gyro_rad_s()[2];
+        let Phase::Running(run) = &mut self.phase else {
+            self.gyro_z = gyro_z;
+            return Err(Reject::NotRunning);
+        };
+        run.advance_to(imu.stamp_ns(), self.gyro_z, &self.tuning.q)?;
+        self.gyro_z = gyro_z;
+        Ok(())
+    }
+}
+
+impl Update<IMU> for EKF {
+    /// Lateral accel a_y = v (omega_z - b_w): centripetal constraint that makes gyro bias observable.
+    fn update(&mut self, imu: &IMU) -> Result<(), Reject> {
+        let Phase::Running(run) = &mut self.phase else {
+            return Err(Reject::NotRunning);
+        };
+        run.advance_to(imu.stamp_ns(), self.gyro_z, &self.tuning.q)?;
+        let gyro_z = imu.gyro_rad_s()[2];
+        run.correct(
+            &Vec1::new(imu.accel_m_s2()[1]),
+            &imu_h(&run.x, gyro_z),
+            &imu_jacobian(&run.x, gyro_z),
+            &imu_r(&self.tuning.imu),
+        )
+    }
+}
+
+impl Update<GPS> for EKF {
+    /// First two fixes bootstrap origin and heading; after that, each fix is an ENU position update.
+    fn update(&mut self, fix: &GPS) -> Result<(), Reject> {
         match &mut self.phase {
             Phase::AwaitingFix => {
                 self.phase = Phase::AwaitingMotion {
@@ -140,7 +166,7 @@ impl EKF {
             Phase::AwaitingMotion { origin, first, t0_ns} => {
                 let z = origin.to_enu(fix);
                 if (z - *first).norm() >= self.tuning.min_baseline && fix.stamp_ns() > *t0_ns {
-                    let run = Running::from_two_fixes(*origin, *first, *t0_ns, z, fix.stamp_ns(), &self.tuning);
+                    let run = Running::from_two_fixes(*origin, *first, *t0_ns, z, fix.stamp_ns(),&self.tuning);
                     self.phase = Phase::Running(run);
                 }
                 Ok(())
@@ -197,5 +223,81 @@ mod tests {
         ekf.on_gps(&fix(2 * S, 2e-4)?)?;
         assert!(ekf.estimate().is_none());
         Ok(())
+    }
+
+    #[test]
+    fn stale_imu_update_alone_is_rejected() -> Result<(), Box<dyn Error>> {
+        let mut ekf = running_ekf()?;
+        let stale = IMU::new(S / 2, [0.0; 3], [0.0; 3])?;
+        let err = ekf.update(&stale).unwrap_err();
+        assert_eq!(err, Reject::OutOfOrder { stamp_ns: S / 2, last_ns: S });
+        Ok(())
+    }
+
+    mod properties {
+        use super::*;
+        use proptest::prelude::*;
+
+        ///P is symmetric and positive semi-definite, up to rounding.
+        fn assert_psd(p: &Mat5) -> Result<(), TestCaseError> {
+            let scale = p.abs().max().max(1.0);
+            let asym = (p - p.transpose()).abs().max();
+            prop_assert!(asym <= 1e-9 * scale, "assymetry {asym:e}");
+            let min_eig = p.symmetric_eigenvalues().min();
+            prop_assert!(min_eig >= -1e-9 *scale, "min eigenvalue {min_eig:e}"); //WARNING: shouldn't this be a positive quantity?
+            Ok(())
+        }
+
+        /// One IMU step: (dt [ns], gyro_z [rad/s], accel_y [m/s^2]), plus an
+        /// optional GPS offset (dlat, dlon) [deg] at the same stamp.
+        fn step() -> impl Strategy<Value = (u64, f64, f64, Option<(f64, f64)>)> {
+            (
+                1_000_000u64..50_000_000,
+                -1.0f64..1.0,
+                -5.0f64..5.0,
+                prop::option::weighted(0.1, (-2e-4f64..2e-4, -2e-4f64..2e-4))
+            )
+        }
+
+        proptest! {
+            #[test]
+            fn covariance_stays_psd_symmetric(steps in prop::collection::vec(step(), 1..300)) {
+                let mut ekf = running_ekf().unwrap();
+                let mut t_ns = S;
+                for (dt_ns, gyro_z, accel_y, gps) in steps {
+                    t_ns += dt_ns;
+                    let imu = IMU::new(t_ns, [0.0, 0.0, gyro_z], [0.0, accel_y, 0.0]).unwrap();
+                    ekf.on_imu(&imu).unwrap();
+                    if let Some((dlat, dlon)) = gps {
+                        let fix = GPS::new(t_ns, LAT + dlat, LON + dlon, 30.0, [6.25; 3]).unwrap();
+                        ekf.on_gps(&fix).unwrap();
+                    }
+                    let (_, p) = ekf.estimate().unwrap();
+                    assert_psd(p)?;
+                }
+            }
+
+            #[test]
+            fn stale_imu_does_not_change_state(
+                steps in prop::collection::vec(step(), 1..100),
+                back_ns in 1u64..1_000_000_000,
+            ) {
+                let mut ekf = running_ekf().unwrap();
+                let mut t_ns = S;
+                for (dt_ns, gyro_z, accel_y, _) in steps {
+                    t_ns += dt_ns;
+                    let imu = IMU::new(t_ns, [0.0, 0.0, gyro_z], [0.0, accel_y, 0.0]).unwrap();
+                    ekf.on_imu(&imu).unwrap();
+                }
+                let (x, p) = ekf.estimate().unwrap();
+                let (x0, p0) = (*x, *p);
+
+                let stale = IMU::new(t_ns - back_ns, [0.0; 3], [0.0; 3]).unwrap();
+                let rejected = matches!(ekf.on_imu(&stale), Err(Reject::OutOfOrder { .. }));
+                prop_assert!(rejected);
+                let (x, p) = ekf.estimate().unwrap();
+                prop_assert_eq!((*x, *p), (x0, p0));
+            }
+        }
     }
 }
