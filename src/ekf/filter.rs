@@ -29,7 +29,7 @@ mod tests {
     use super::*;
     use crate::ekf::model::{predict, ProcessNoise, StateMatrix};
     use crate::ekf::sensors::{gps_h, gps_jacobian, gps_r, GPSNoise, Mat2, Vec2};
-    use approx::{assert_relative_eq, assert_relative_ne};
+    use approx::assert_relative_eq;
 
     fn prior() -> (Vec5, Mat5) {
         let x = Vec5::new(0.0, 0.0, 0.0, 10.0, 0.0);

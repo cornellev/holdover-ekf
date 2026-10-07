@@ -2,7 +2,7 @@ use map_3d::{geodetic2enu, Ellipsoid};
 use nalgebra::{SMatrix, SVector};
 
 use crate::ekf::model::{StateEnum, Vec5}; // enum and vec structure
-use crate::ekf::msg::GPSFix;
+use sensor_defs::GPS;
 
 pub type Vec1 = SVector<f64, 1>;
 pub type Mat1 = SMatrix<f64, 1, 1>;
@@ -19,15 +19,15 @@ pub struct Origin {
 }
 
 impl Origin {
-    pub fn from_fix(fix: &GPSFix) -> Self {
-        Self { lat: fix.lat.to_radians(), lon: fix.lon.to_radians(), alt: fix.alt }
+    pub fn from_fix(fix: &GPS) -> Self {
+        Self { lat: fix.lat_deg().to_radians(), lon: fix.lon_deg().to_radians(), alt: fix.alt_m() }
     }
  
-    pub fn to_enu(&self, fix: &GPSFix) -> Vec2 {
+    pub fn to_enu(&self, fix: &GPS) -> Vec2 {
         let (e, n, _u) = geodetic2enu(
-            fix.lat.to_radians(),
-            fix.lon.to_radians(),
-            fix.alt,
+            fix.lat_deg().to_radians(),
+            fix.lon_deg().to_radians(),
+            fix.alt_m(),
             self.lat,
             self.lon,
             self.alt,
@@ -92,8 +92,9 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
 
-    fn fix(lat: f64, lon: f64) -> GPSFix {
-        GPSFix { t: 0.0, lat, lon, alt: 30.0 }
+    fn fix(lat: f64, lon: f64) -> GPS {
+        // GPSFix { t: 0.0, lat, lon, alt: 30.0 }
+        GPS::new(0, lat, lon, 30.0, [2.0; 3]).unwrap()
     }
 
     #[test]

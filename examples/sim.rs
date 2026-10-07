@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use holdover_ekf::ekf::estimator::{EKF, Tuning};
 use holdover_ekf::ekf::model::{wrap_pi, Vec5, StateEnum};
-use holdover_ekf::ekf::msg::{GPSFix, IMU};
+use sensor_defs::{GPS, IMU};
 use map_3d::{enu2geodetic, Ellipsoid};
 use rand::{rngs::StdRng, SeedableRng};
 use rand_distr::{Distribution, Normal};
@@ -12,6 +12,7 @@ const LON0: f64 = -122.1;
 const ALT0: f64 = 30.0;
 
 const DT: f64 = 0.01; // 100 Hz IMU
+const DT_NS: u64 = 10_000_000; // same step, exact integer for sensor stamps
 const GPS_RATE: usize = 10; // 10 Hz GPS
 const T_END: f64 = 300.0; // seconds
 const OUTAGE: (f64, f64) = (150.0, 180.0); // simulation outage of GPS
@@ -23,13 +24,13 @@ fn yaw_rate(t: f64) -> f64 {
     0.1 * (std::f64::consts::TAU * t / 60.0).sin()
 }
 
-fn to_fix(t: f64, e: f64, n: f64) -> GPSFix {
+fn to_fix(t_ns: u64, e: f64, n: f64, var_m2: f64) -> GPS {
     let (lat, lon, alt) = enu2geodetic(
         e, n, 0.0, 
         LAT0.to_radians(), LON0.to_radians(), ALT0,
         Ellipsoid::WGS84
     );
-    GPSFix { t, lat: lat.to_degrees(), lon: lon.to_degrees(), alt }
+    GPS::new(t_ns, lat.to_degrees(), lon.to_degrees(), alt, [var_m2; 3]).expect("sim fix is valid")
 }
 
 #[derive(Default)]
@@ -74,7 +75,8 @@ fn main() {
     println!("{:>6} {:>9} {:>9} {:>9} {:>10} {:>9}", "t[s]", "pos_err", "psi_err", "v_err", "b_w", "sigma_pos");
 
     for k in 0..n_steps {
-        let t = k as f64 * DT;
+        let t = k as f64 * DT; // truth model, seconds
+        let t_ns = k as u64 * DT_NS; // sensor stamps, exact
 
         // Truth: same kinematics as filter but with exact inputs - no noise.
         let omega = yaw_rate(t);
@@ -85,18 +87,17 @@ fn main() {
             truth[StateEnum::Psi] = wrap_pi(truth[StateEnum::Psi] + omega * DT);
         }
 
-        let imu = IMU {
-            t,
-            gyro_z: omega + GYRO_BIAS + gyro_noise.sample(&mut rng),
-            accel_x: 0.0,
-            accel_y: V * omega + ay_noise.sample(&mut rng),
-        };
+        let imu = IMU::new(
+            t_ns,
+            [0.0, 0.0, omega + GYRO_BIAS + gyro_noise.sample(&mut rng)],
+            [0.0, V * omega + ay_noise.sample(&mut rng), 0.0]
+        ).expect("sim IMU is valid");
 
         let in_outage = (OUTAGE.0..OUTAGE.1).contains(&t);
         let gps = (k % GPS_RATE == 0 && !in_outage).then(|| {
             let (de, dn) = (gps_noise.sample(&mut rng), gps_noise.sample(&mut rng));
             origin_offset.get_or_insert((truth[StateEnum::Pe] + de, truth[StateEnum::Pn] + dn));
-            to_fix(t, truth[StateEnum::Pe] + de, truth[StateEnum::Pn] + dn)
+            to_fix(t_ns, truth[StateEnum::Pe] + de, truth[StateEnum::Pn] + dn, tuning.gps.sigma_pos.powi(2))
         });
 
         let tic = Instant::now();
