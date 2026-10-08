@@ -4,13 +4,12 @@ use sensor_defs::{GPS, IMU, Propagate, Reject, Update};
 use crate::ekf::filter::update;
 use crate::ekf::model::{predict, Mat5, ProcessNoise, Vec5};
 use crate::ekf::sensors::{
-    gps_h, gps_jacobian, gps_r, imu_h, imu_jacobian, imu_r, GPSNoise, IMUNoise, Origin, Vec1, Vec2
+    gps_h, gps_jacobian, gps_r, gps_var_along, imu_h, imu_jacobian, imu_r, IMUNoise, Origin, Vec1, Vec2
 };
 
 #[derive(Debug, Clone, Copy)]
 pub struct Tuning {
     pub q: ProcessNoise,
-    pub gps: GPSNoise,
     pub imu: IMUNoise,
     pub sigma_b0: f64, // initial gyro bias std [rad/s]
     pub min_baseline: f64, // metres driven before heading is initalized
@@ -20,7 +19,6 @@ impl Default for Tuning {
     fn default() -> Self {
         Self {
             q: ProcessNoise::default(),
-            gps: GPSNoise::default(),
             imu: IMUNoise::default(),
             sigma_b0: 1e-2,
             min_baseline: 10.0,
@@ -38,22 +36,34 @@ struct Running {
 }
 
 impl Running {
-    // Heading frmo the chord between two fixes; variance from sigma_gps at each end.
-    fn from_two_fixes(origin: Origin, first: Vec2, t0_ns: u64, z: Vec2, t_ns: u64, tun: &Tuning) -> Self {
+    // Heading and speed from the chord between two fixes;
+    // each error is projected across the chord (heading) and along it (speed).
+    fn from_two_fixes(
+        origin: Origin, 
+        first: Vec2,
+        first_var_m2: [f64; 3],
+        t0_ns: u64,
+        fix: &GPS,
+        tun: &Tuning
+    ) -> Self {
+        let z = origin.to_enu(fix); // fix is already a readable
+        // reference
         let d = z - first;
-        let (len, dt) = (d.norm(), (t_ns - t0_ns) as f64 * 1e-9);
-        let var_gps = tun.gps.sigma_pos.powi(2);
+        let (len, dt) = (d.norm(), (fix.stamp_ns() - t0_ns) as f64 * 1e-9);
+        let u = d / len;
+        let u_perp = Vec2::new(-u[1], u[0]);
+        let var = fix.pos_var_m2();
 
-        let x = Vec5::new(z[0], z[1], d[1].atan2(d[0]), len / dt, 0.0);
+        let x = Vec5::new(z[0], z[1], d[1].atan2(d[0]), len/dt, 0.0);
         let p = Mat5::from_diagonal(&Vec5::new(
-            var_gps,
-            var_gps,
-            2.0 * var_gps / len.powi(2),
-            2.0 * var_gps / dt.powi(2),
-            tun.sigma_b0.powi(2)
+        var[0],
+        var[1],
+        (gps_var_along(first_var_m2, &u_perp) + gps_var_along(var, &u_perp)) / len.powi(2),
+        (gps_var_along(first_var_m2, &u) + gps_var_along(var, &u)) / dt.powi(2),
+        tun.sigma_b0.powi(2),
         ));
 
-        Self { origin, x, p, t_ns }
+        Self { origin, x, p, t_ns: fix.stamp_ns() }
     }
 
     fn advance_to(&mut self, t_ns: u64, gyro_z: f64, q: &ProcessNoise) -> Result<(), Reject> {
@@ -83,10 +93,9 @@ impl Running {
 }
 
 #[derive(Debug)]
-#[expect(clippy::large_enum_variant, reason = "one long-lived instance")]
 enum Phase {
     AwaitingFix,
-    AwaitingMotion { origin: Origin, first: Vec2, t0_ns: u64 },
+    AwaitingMotion { origin: Origin, first: Vec2, first_var_m2: [f64; 3], t0_ns: u64 },
     Running(Running),
 }
 
@@ -159,14 +168,15 @@ impl Update<GPS> for EKF {
                 self.phase = Phase::AwaitingMotion {
                     origin: Origin::from_fix(fix),
                     first: Vec2::zeros(),
+                    first_var_m2: fix.pos_var_m2(),
                     t0_ns: fix.stamp_ns(),
                 };
                 Ok(())
             }
-            Phase::AwaitingMotion { origin, first, t0_ns} => {
+            Phase::AwaitingMotion { origin, first, first_var_m2, t0_ns} => {
                 let z = origin.to_enu(fix);
                 if (z - *first).norm() >= self.tuning.min_baseline && fix.stamp_ns() > *t0_ns {
-                    let run = Running::from_two_fixes(*origin, *first, *t0_ns, z, fix.stamp_ns(),&self.tuning);
+                    let run = Running::from_two_fixes(*origin, *first, *first_var_m2, *t0_ns, fix, &self.tuning);
                     self.phase = Phase::Running(run);
                 }
                 Ok(())
@@ -174,7 +184,7 @@ impl Update<GPS> for EKF {
             Phase::Running(run) => {
                 run.advance_to(fix.stamp_ns(), self.gyro_z, &self.tuning.q)?;
                 let z = run.origin.to_enu(fix);
-                run.correct(&z, &gps_h(&run.x), &gps_jacobian(), &gps_r(&self.tuning.gps))
+                run.correct(&z, &gps_h(&run.x), &gps_jacobian(), &gps_r(fix))
             }
         }
     }
@@ -184,6 +194,8 @@ impl Update<GPS> for EKF {
 mod tests {
     use super::*;
     use std::error::Error;
+    use crate::ekf::model::{StateEnum, StateMatrix};
+    use approx::assert_relative_eq;
 
     const S: u64 = 1_000_000_000;
     const LAT: f64 = 37.4;
@@ -231,6 +243,49 @@ mod tests {
         let stale = IMU::new(S / 2, [0.0; 3], [0.0; 3])?;
         let err = ekf.update(&stale).unwrap_err();
         assert_eq!(err, Reject::OutOfOrder { stamp_ns: S / 2, last_ns: S });
+        Ok(())
+    }
+
+    #[test]
+    fn bootstrap_projects_fix_variance_along_and_across_chord() -> Result<(), Box<dyn Error>> {
+        // Chord points north: east error (4 m^2) only blurs heading,
+        // north error (1 m^2) only blurs speed.
+        let var = [4.0, 1.0, 9.0];
+        let first = GPS::new(0, LAT, LON, 30.0, var)?;
+        let second = GPS::new(S, LAT + 2e-4, LON, 30.0, var)?;
+        let mut ekf = EKF::new(Tuning::default());
+        ekf.on_gps(&first)?;
+        ekf.on_gps(&second)?;
+
+        let len = Origin::from_fix(&first).to_enu(&second).norm();
+        let (_, p) = ekf.estimate().expect("running");
+        assert_relative_eq!(p.at(StateEnum::Psi, StateEnum::Psi), (4.0 + 4.0) / len.powi(2), max_relative = 1e-9);
+        assert_relative_eq!(p.at(StateEnum::V, StateEnum::V), (1.0 + 1.0) / 1.0 , max_relative = 1e-9);
+        Ok(())
+    }
+
+    #[test]
+    fn noisy_fix_pulls_estimate_less() -> Result<(), Box<dyn Error>> {
+        let var1 = [1.0; 3];
+        let var2 = [100.0; 3];
+
+        let mut filter_sharp = running_ekf()?;
+        let mut filter_blurry = running_ekf()?;
+
+        let pos_sharp = GPS::new(2 * S, LAT, LON, 30.0,var1)?;
+        let pos_blurry = GPS::new(2 * S, LAT, LON, 30.0,var2)?;
+
+        filter_sharp.on_gps(&pos_sharp)?;
+        filter_blurry.on_gps(&pos_blurry)?;
+
+        let original_pos = Origin::from_fix(&fix(0, 0.0)?).to_enu(&pos_sharp);
+
+        let (est_pos1, p1) = filter_sharp.estimate().unwrap();
+        let (est_pos2, p2) = filter_blurry.estimate().unwrap();
+
+        // Assert north of lower variance is better, along with east
+        assert!((est_pos1[0] - original_pos[0]).abs() < (est_pos2[0] - original_pos[0]).abs());
+        assert!(p1.at(StateEnum::Pn, StateEnum::Pn) < p2.at(StateEnum::Pn, StateEnum::Pn));
         Ok(())
     }
 

@@ -19,6 +19,7 @@ const OUTAGE: (f64, f64) = (150.0, 180.0); // simulation outage of GPS
 
 const V: f64 = 10.0;
 const GYRO_BIAS: f64 = 5e-3;
+const GPS_SIGMA_M: f64 = 2.5;
 
 fn yaw_rate(t: f64) -> f64 {
     0.1 * (std::f64::consts::TAU * t / 60.0).sin()
@@ -58,7 +59,7 @@ fn main() {
     let gyro_noise = Normal::new(0.0, tuning.q.sigma_omega / DT.sqrt()).unwrap(); // density 
     // -> per sample
     let ay_noise = Normal::new(0.0, 0.3).unwrap();
-    let gps_noise = Normal::new(0.0, tuning.gps.sigma_pos).unwrap();
+    let gps_noise = Normal::new(0.0, GPS_SIGMA_M).unwrap();
 
     let mut ekf = EKF::new(tuning);
     let mut truth = Vec5::new(0.0, 0.0, 0.0, V, GYRO_BIAS);
@@ -97,7 +98,7 @@ fn main() {
         let gps = (k % GPS_RATE == 0 && !in_outage).then(|| {
             let (de, dn) = (gps_noise.sample(&mut rng), gps_noise.sample(&mut rng));
             origin_offset.get_or_insert((truth[StateEnum::Pe] + de, truth[StateEnum::Pn] + dn));
-            to_fix(t_ns, truth[StateEnum::Pe] + de, truth[StateEnum::Pn] + dn, tuning.gps.sigma_pos.powi(2))
+            to_fix(t_ns, truth[StateEnum::Pe] + de, truth[StateEnum::Pn] + dn, GPS_SIGMA_M.powi(2))
         });
 
         let tic = Instant::now();
@@ -121,12 +122,11 @@ fn main() {
         let stats = if in_outage { &mut holdover } else { &mut nominal };
         stats.sq_pos += pos_err.powi(2);
         stats.n += 1;
-        if t > 10.0 {
-            if let Some(p_inv) = p.try_inverse() {
+        if t > 10.0 
+            && let Some(p_inv) = p.try_inverse() {
                 stats.nees += (err.transpose() * p_inv * err)[0];
                 stats.n_nees += 1;
             }
-        }
         if in_outage {
             max_holdover_err = max_holdover_err.max(pos_err);
         }

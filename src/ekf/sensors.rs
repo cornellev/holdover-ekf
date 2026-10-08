@@ -37,16 +37,7 @@ impl Origin {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct GPSNoise {
-    pub sigma_pos: f64,
-}
-
-impl Default for GPSNoise {
-    fn default() -> Self { Self { sigma_pos: 2.5 } }
-}
-
-// Predicted measurement model for GPS
+/// Predicted measurement model for GPS
 pub fn gps_h(x: &Vec5) -> Vec2 {
     Vec2::new(x[StateEnum::Pe], x[StateEnum::Pn])
 }
@@ -58,8 +49,15 @@ pub fn gps_jacobian() -> Mat2x5 {
     h
 }
 
-pub fn gps_r(noise: &GPSNoise) -> Mat2 {
-    Mat2::identity() * noise.sigma_pos.powi(2)
+///R from the receiver's own per-fix accuracy: diag(var_e, var_n).
+pub fn gps_r(fix: &GPS) -> Mat2 {
+    let var = fix.pos_var_m2();
+    Mat2::from_diagonal(&Vec2::new(var[0], var[1]))
+}
+
+///Variance of a fix's horizontal error projected onto unit vector `u` (ENU convention).
+pub fn gps_var_along(var_m2: [f64; 3], u: &Vec2) -> f64 {
+    u[0].powi(2) * var_m2[0] + u[1].powi(2) * var_m2[1]
 }
 
 #[derive(Debug, Clone, Copy)]

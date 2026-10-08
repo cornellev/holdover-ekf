@@ -28,7 +28,7 @@ pub fn update<const M: usize>(
 mod tests {
     use super::*;
     use crate::ekf::model::{predict, ProcessNoise, StateMatrix};
-    use crate::ekf::sensors::{gps_h, gps_jacobian, gps_r, GPSNoise, Mat2, Vec2};
+    use crate::ekf::sensors::{gps_h, gps_jacobian, Mat2, Vec2};
     use approx::assert_relative_eq;
 
     fn prior() -> (Vec5, Mat5) {
@@ -37,11 +37,15 @@ mod tests {
         (x, p)
     }
 
+    fn r_gps() -> Mat2 {
+        Mat2::identity() * 2.5f64.powi(2)
+    }
+
     #[test]
     fn perfect_measurement_shrinks_cov() {
         let (x,p) = prior();
         let z = gps_h(&x);
-        let (xn, pn) = update(&x, &p, &z, &gps_h(&x), &gps_jacobian(), &gps_r(&GPSNoise::default()))
+        let (xn, pn) = update(&x, &p, &z, &gps_h(&x), &gps_jacobian(), &r_gps())
             .expect("S should be invertible");
 
         assert_relative_eq!(xn, x, epsilon=1e-12);
@@ -67,7 +71,7 @@ mod tests {
         let (x, p) = prior();
         let (x, p) = predict(&x, &p, 0.2, 0.1, &ProcessNoise::default());
         let z = Vec2::new(1.3, -0.4);
-        let (_, pn) = update(&x, &p, &z, &gps_h(&x), &gps_jacobian(), &gps_r(&GPSNoise::default())).unwrap();
+        let (_, pn) = update(&x, &p, &z, &gps_h(&x), &gps_jacobian(), &r_gps()).unwrap();
 
         assert_relative_eq!(pn, pn.transpose(), epsilon=1e-12);
         let min_eig = pn.symmetric_eigenvalues().min();
@@ -81,7 +85,7 @@ mod tests {
         assert!(p.at(StateEnum::Pn, StateEnum::Psi) > 0.0);
 
         let z = gps_h(&x) + Vec2::new(0.0, 1.0);
-        let (xn, _) = update(&x, &p, &z, &gps_h(&x), &gps_jacobian(), &gps_r(&GPSNoise::default())).unwrap();
+        let (xn, _) = update(&x, &p, &z, &gps_h(&x), &gps_jacobian(), &r_gps()).unwrap();
 
         assert!(xn[StateEnum::Psi] > x[StateEnum::Psi]);
     }
